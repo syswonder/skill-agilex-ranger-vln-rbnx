@@ -1,0 +1,249 @@
+# InternVLA-N1 DualVLN navigation bridge -- Ranger Mini V3.
+#
+# Every key here is one field of internvln_navigation.core.RuntimeConfig, and
+# RuntimeConfig re-validates all of them at startup, so a typo or an
+# out-of-range value fails the launch instead of silently changing behaviour.
+#
+# Motion is continuous (`servo_enabled`): each answer becomes one goal pose --
+# the pose the answer lands on, advanced by the model's actions -- and a 50 Hz
+# proportional controller servos toward it while the next request is already in
+# flight.  `plan_hold_s` is only the watchdog -- the age at which a plan stops
+# commanding motion -- so a dead model brakes the robot instead of letting it
+# travel on a stale answer.  Stopping to think between steps (`lockstep_enabled`
+# + `action_step_s`) is the fallback path and is off.
+internvln_navigation:
+  ros__parameters:
+    # dry-run arms nothing: no velocity publisher is created at all.  Switch to
+    # live only after the dry-run chain has been watched end to end.
+    mode: dry-run
+
+    rgb_topic: /camera/color/image_raw
+    command_topic: /ranger/vln/cmd_vel_raw
+    instruction_topic: /ranger/vln/instruction
+    status_topic: /ranger/vln/status
+
+    # The InternVLA server BASE url.  The client appends its one route,
+    # /eval_dual, so do NOT append /eval_dual here.
+    server_url: http://127.0.0.1:5801
+    # Goal-shaped on purpose: the model answers STOP when it judges the
+    # sentence's goal reached, so an instruction with no object and no end
+    # ("walk forward along the path") gets called done almost immediately.
+    instruction: Go to the chair and stop.
+
+    # Boot IDLE.  Until an operator issues an instruction (Robonix
+    # `robonix/primitive/vln/task set`, `rbnx chat`, or the ROS topic below) the
+    # node sends the model NOTHING and holds still -- no request per camera
+    # frame, no plan, zero velocity.  `instruction:` above is the reference text
+    # reported in /ranger/vln/status, not a task that arms itself.  Set false to
+    # restore "boot with the configured instruction and start asking".
+    require_instruction: true
+
+    # Official DualVLN preprocessing: resize to 384 px high, then centre-crop a
+    # square.  Both values are locked by RuntimeConfig; they are listed so the
+    # choice is visible, not so they can be tuned.
+    # full_frame = send the camera frame as it is and let the server resize it
+    # to --resize_w/h 384 (what the deployment document's own client and the
+    # Go2 skill do).  center_crop_height = the older local 384x384 centre crop.
+    model_input_mode: full_frame
+    model_crop_size: 384
+    jpeg_quality: 85
+
+    # Must exceed the slowest single model step.  DualVLN with num_history=8
+    # commonly takes 3-8 s per frame once the history fills.
+    http_timeout_s: 60.0
+
+    dispatch_hz: 50.0
+    # Watchdog only: how long after its last update a plan may still command
+    # motion.  It must be at least action_step_s (validated) or the watchdog
+    # would cut a step short.
+    plan_hold_s: 1.5
+
+    # Stop-and-go, the fallback path and the behaviour before the servo.  Each
+    # answer is driven for its own duration, then zero is published until the
+    # next one, and the inference thread is gated so it does not even take a
+    # frame until the chassis has settled.  It guarantees the model always sees
+    # a still robot, at the cost of spending most of every cycle at zero -- the
+    # lurching the servo removes.  Off while servo_enabled is on.
+    lockstep_enabled: false
+    action_step_s: 1.0
+    step_settle_s: 0.5
+
+    # Closed-loop steps.  Both reference deployments end a step when the
+    # chassis has actually done it (odometry goal + PID on the Go2 client, a
+    # blocking chassis move in the deployment document's client); this stack
+    # commanded the speed that covers 0.25 m / 15 deg in action_step_s and held
+    # it for that long.  Measured here a nominal 0.25 m step covers ~0.20 m, so
+    # the error accumulates over a task.  With the feedback on, a segment ends
+    # the moment /odom reports its angle/distance; the nominal duration remains
+    # the fallback and odom_segment_timeout_factor x duration the hard stop.
+    # odom_feedback_enabled: false restores the pure-timing behaviour exactly.
+    odom_feedback_enabled: true
+    odom_topic: /odom
+    odom_timeout_s: 0.5
+    odom_turn_tolerance_deg: 1.5
+    odom_distance_tolerance_m: 0.02
+    odom_segment_timeout_factor: 2.0
+
+    # Continuous drive: the reference client's two-thread shape (a control loop
+    # that never blocks + a planning thread that only moves the goal post).
+    # Each answer becomes the world-frame goal formed by advancing the pose the
+    # answer landed on by the model's actions, and the dispatch tick servos
+    # toward it at 50 Hz.  Measuring from the answer's own pose (not the one
+    # stamped on the frame) is what the official client does and what keeps the
+    # motion smooth -- see RuntimeConfig.servo_enabled.
+    #
+    # A plan with geometry and no fresh pose is held (servo_wait_odom) rather
+    # than driven blind; /odom dying mid-run brakes the robot.
+    # servo_enabled: false restores segment execution (and with
+    # lockstep_enabled: true, the old stop-and-go timing).
+    servo_enabled: true
+    # The reference's gains (controllers.py: Kp_trans=2.0, Kp_yaw=1.5, no
+    # derivative term).  Its caps are 0.6/0.5 m/s, ours are 0.25/0.30, so at
+    # those gains any offset past 12.5 cm was full throttle and any heading
+    # error past ~11 deg full steering.  1.2/1.0 keeps the approach
+    # proportional over the distances this chassis uses.
+    servo_kp_trans: 1.2
+    servo_kp_yaw: 1.0
+    # Arrival box: inside it the robot publishes zero and waits for the next
+    # answer instead of creeping onto the point.
+    servo_position_tolerance_m: 0.05
+    servo_yaw_tolerance_deg: 3.0
+
+    max_vx: 0.15
+    max_wz: 0.30
+
+    # Physical size of one model step.  action_step_s is only the *nominal*
+    # duration: the pair (discrete_forward_m, discrete_step_deg) is what the
+    # robot must actually cover, and the hold stretches if a speed cap is in
+    # the way.  So these two numbers are the sizes, not just a ratio.
+    discrete_forward_m: 0.25
+    discrete_step_deg: 15.0
+    # How many of the model's actions one answer may commit to.  The model
+    # answers in chunks ([1,1,1,1] = a metre, not a quarter metre) and both
+    # reference deployments drive the whole chunk before looking again.  This
+    # stack truncated to 1 because a step used to be blind travel; with
+    # odom_feedback_enabled each element ends when it is actually achieved, so
+    # the chunk can be executed as the model asked.  Was 1 until 2026-10-30,
+    # when a live capture showed the model answering [3,3,3,3] (four turns,
+    # ~60 deg) while the robot turned 15 deg, re-photographed, and got the same
+    # answer again -- "turn to face it" became a staircase of small corrections.
+    # 2026-11-04: 4 -> 2.  Four forward steps is a committed metre between two
+    # photographs; two halves the blind commitment and still honours the chunk.
+    max_chunk_actions: 2
+    # 0 = never flush.  The server keeps every frame since the episode began and
+    # samples 8 of them evenly for context (np.linspace(0, episode_idx-1, 8)),
+    # which is also how the model was trained -- that history IS its memory of
+    # where it first saw the target.  The official client resets only on the
+    # very first request.  Non-zero flushes the history every N frames, which is
+    # how the robot came to lose a target it had already found.
+    history_reset_frames: 0
+    # How far along the model's trajectory the controller aims.  The yaw is
+    # pure pursuit, 2 v sin(bearing) / L with L the distance to this point, so
+    # the commanded radius is L / (2 sin(bearing)) -- the circle through the
+    # point.  Any bearing gets a proportional yaw; there is no turn threshold
+    # to fall under.  Was 0.30 m until 2026-10-30: answers land every 1 s
+    # (median) to 3 s (p90) and the robot covers 0.15-0.75 m in that time, so
+    # with 0.30 m the goal was already behind it 45% of the time and within
+    # 8 cm 62% -- carrot chasing, which is what the S-shaped walk was.  1.00 m
+    # covers p90 of the answer cadence.
+    lookahead_m: 1.00
+    # How much of that path one answer commits to.  lookahead_m decides where
+    # the curvature is read; this decides how far the robot drives before the
+    # next answer re-aims it.  They were the same number until 2026-11-04, so
+    # a 0.30 m path was driven as a one-metre, full-speed lunge.
+    trajectory_advance_m: 0.35
+    # Forward speed for trajectory answers: max_vx is the chassis ceiling, not
+    # a target.  lookahead / action_step_s asked for 1.0 m/s and was clipped on
+    # every frame; below the ceiling the arc keeps its curvature.
+    trajectory_cruise_vx: 0.18
+    # A trajectory whose pursued point is closer than this means "stay here",
+    # not "creep two centimetres".  It is read as the model's own arrival
+    # verdict -- the same statement a discrete STOP makes -- so the runtime's
+    # consecutive-STOP counter can finish a task from trajectory answers.
+    trajectory_stop_m: 0.05
+    # There is no yaw gain: the yaw is pure pursuit (2 v sin(bearing) / L), not
+    # an amplified bearing.  The 2026-10-22 gain/boost experiments multiplied
+    # the bearing instead of converting it, made small leans into swerves and
+    # were reverted.
+
+    # Depth-based safety gate.  Deliberately independent of the model: any
+    # surface inside a forward band closer than safety_gate_stop_m publishes
+    # zero velocity, whatever the model asked for.  It is a reflex stop, not
+    # obstacle avoidance -- it never steers around anything.
+    #
+    # Fail-closed: no depth, a stale frame, or a frame with too few valid
+    # pixels all mean "blocked".  require_depth: false restores "move without
+    # depth", which is exactly the behaviour that let the robot drive into
+    # things; leave it true on this profile.
+    safety_gate_enabled: true
+    safety_gate_require_depth: true
+    depth_topic: /camera/depth/image_raw
+    # Release is deliberately wider than stop: without the gap the gate opens
+    # at the threshold and the base pulses.
+    safety_gate_stop_m: 0.30
+    safety_gate_release_m: 0.50
+    safety_gate_depth_timeout_s: 0.30
+    # 0 = infer from the dtype (uint16 -> millimetres, float -> metres).
+    safety_gate_depth_scale_m: 0.0
+    # Forward band as fractions of the image.  The bottom stops at 0.80 because
+    # the floor just under the camera is always within a metre.
+    safety_gate_roi_top_fraction: 0.25
+    safety_gate_roi_bottom_fraction: 0.80
+    safety_gate_roi_width_fraction: 0.60
+    safety_gate_min_valid_pixels: 200
+    safety_gate_percentile: 1.0
+
+    # A frame that fails costs one plan; this many in a row means the model is
+    # gone and the running plan is retired rather than held.
+    fault_after_failures: 3
+
+    # DualVLN action 0 is STOP: the model's verdict about whether the described
+    # goal has been reached.  A single 0, or a short burst, is not evidence --
+    # the task only counts as finished when the model is stuck on STOP: this
+    # many answers in a row AND at least finish_after_stops_min_s seconds since
+    # the run began.  Then the plan is retired, the client disarmed and the
+    # capability reports status="finished" / running=False.  Any driving answer
+    # (1/2/3 or a trajectory) starts the run over, so an occasional STOP never
+    # ends a healthy task.
+    finish_after_stops: 20
+    finish_after_stops_min_s: 30.0
+    # A set carrying the same instruction this soon after a finish is the
+    # upper layer re-dispatching the task it just saw end; it is answered with
+    # status="finished" and does not restart the episode.  A different
+    # instruction, a longer gap, or stop-then-set starts a new task.
+    finish_reissue_grace_s: 10.0
+    # `vln/task set` waits for the episode it started (<= 0 disables): that is
+    # what makes the Robonix plan node live as long as the task, so Pilot has
+    # nothing to replan from until the robot is actually done.
+    set_block_timeout_s: 900.0
+
+    # Retry the same frame this many times before believing a failure.  The live
+    # server answers a noticeable share of requests with HTTP 500, and a first
+    # attempt that is given up on costs the frame *and* the episode history.
+    failure_retries: 1
+
+    nav_raw_topic: /ranger/vln/nav_cmd_vel_raw
+    vln_raw_topic: /ranger/vln/cmd_vel_raw
+    selected_output_topic: /cmd_vel_nav
+    selected_source: vln
+    source_max_age_s: 0.25
+
+    # Ranger chassis guard.  With no Nav2 in the chain this reads directly from
+    # the mux output topic above.
+    guard_input_topic: /cmd_vel_nav
+    guard_output_topic: /cmd_vel
+    guard_forward_only: true
+    guard_max_vx_mps: 0.25
+    guard_max_wz_rps: 0.40
+    # These ramp both ways, so they also decide how long the chassis needs to
+    # stop.  Stop-and-go budgets one short step: at 0.30 m/s^2 the ramp alone
+    # eats 0.83 s of a 1.0 s forward step and leaves the robot still rolling
+    # through step_settle_s.  0.60/1.20 reach the commanded speed in ~0.4 s /
+    # ~0.2 s and come to rest inside the 0.5 s settle window.
+    guard_max_linear_accel_mps2: 0.60
+    guard_max_angular_accel_rps2: 1.20
+    guard_command_timeout_s: 0.25
+    guard_publish_hz: 50.0
+    guard_min_turn_radius_m: 0.81
+    guard_turn_policy: clamp_yaw
+    guard_spin_vx_epsilon_mps: 0.02

@@ -1,0 +1,125 @@
+# Soma body description for the Ranger Mini v3 InternVLA-N1 deployment.
+#
+# Soma v2 serves this YAML and the referenced URDF as raw text.  Keep it aligned
+# with robonix_manifest.yaml: every provider that appears there and owns a
+# physical part of the body must be declared here, or Atlas cannot resolve it
+# during discovery.  scripts/validate_manifest_consistency.py enforces this in
+# both directions.
+#
+# Deliberately absent relative to robot-agilex-ranger_mini_v3/soma.yaml: the
+# Piper arm, the wrist camera, the Mid-360 lidar and its IMU, mapping, Nav2,
+# scene, explore, pick, voiceprint and the memory service.  This body exists to
+# drive the base under a visual navigation policy and nothing else.  The audio
+# bridge and the speech service ARE declared, because voice is a way to talk to
+# this body (microphone in, speaker out); neither is on the command path.
+#
+# The VLN primitive is NOT declared here, matching the Go2 reference, where the
+# model bridge also registered itself through Atlas rather than through the body
+# description.
+
+urdf:
+  path: ./urdf/ranger_mini.urdf
+  root_link: base_link
+  model_name: ranger_mini_v3
+
+robot:
+  id: ranger_mini_v3_01
+  display_name: "AgileX Ranger Mini v3, Orbbec Gemini 336L front camera"
+  family: wheeled_robot
+  root_part: base
+  # AgileX Ranger Mini v3 published dimensions.  Verify on the actual chassis
+  # before allowing live motion.
+  dimensions:
+    length_m: 0.738
+    width_m: 0.500
+    height_m: 0.338
+  # Collision hull of the base in base_link, reachable through
+  # robonix/system/soma/footprint.  This deployment runs no costmap, so the hull
+  # is descriptive only -- nothing consumes it to avoid an obstacle, and the
+  # policy has no obstacle avoidance of its own.
+  footprint:
+    base_frame: base_link
+    points:
+      - [0.37, 0.25]
+      - [0.37, -0.25]
+      - [-0.37, -0.25]
+      - [-0.37, 0.25]
+  mass_kg: 63.0
+
+  exports:
+    - provider_id: robot_description
+      capabilities:
+        - { path: robonix/primitive/robot_description/driver, description: "Publish the Soma-owned URDF as /robot_description and TF." }
+    - provider_id: speech
+      capabilities:
+        - { path: robonix/service/speech/listen, description: "Listen through the Tencent ASR backend." }
+        - { path: robonix/service/speech/speak, description: "Speak through the client bridge's speaker." }
+
+  components:
+    - id: base
+      type: mobile_base
+      urdf_link: base_link
+      exports:
+        - provider_id: ranger_chassis
+          capabilities:
+            - { path: robonix/primitive/chassis/driver, description: "AgileX Ranger Mini v3 chassis lifecycle driver." }
+            - { path: robonix/primitive/chassis/twist_in, description: "Canonical /cmd_vel velocity input; the chassis guard is its only writer." }
+            - { path: robonix/primitive/chassis/odom, description: "Ranger wheel/steer odometry and odom to base_link TF." }
+      components:
+        # Declared as rgbd_camera because that is Soma's type for this class of
+        # sensor; the Orbbec is physically RGB-D.  The DualVLN server only ever
+        # receives the color stream.  The depth stream, when the proximity gate
+        # is enabled, is consumed locally and never leaves the robot; as of
+        # 2026-10-22 the gate is disabled in the manifest and the camera's
+        # depth stream is off with it.
+        - id: front_camera
+          type: rgbd_camera
+          urdf_link: camera_435i_link
+          exports:
+            - provider_id: front_camera
+              capabilities:
+                - { path: robonix/primitive/camera/rgb, description: "Stream the front Orbbec RGB image the DualVLN model consumes." }
+                - { path: robonix/primitive/camera/depth, description: "Stream the front Orbbec depth image used only by the local proximity gate." }
+                - { path: robonix/primitive/camera/intrinsics, description: "Publish Orbbec color camera intrinsics." }
+                - { path: robonix/primitive/camera/extrinsics, description: "Publish Orbbec mount extrinsics when available." }
+                - { path: robonix/primitive/camera/camera_info, description: "Publish the Orbbec color camera_info." }
+
+        # Microphone and speaker of the machine running robonix-client, not of
+        # the robot.  The bridge listens for one outbound client connection;
+        # with no client connected the capabilities exist but no audio flows.
+        - id: client_audio
+          type: audio_io
+          exports:
+            - provider_id: audio_client_bridge
+              capabilities:
+                - { path: robonix/primitive/audio/mic, description: "Receive client-side microphone audio over the reverse bridge." }
+                - { path: robonix/primitive/audio/speaker, description: "Send speech audio to the client bridge." }
+
+description:
+  summary: >-
+    AgileX Ranger Mini v3 configured solely for InternVLA-N1 (DualVLN) visual
+    navigation.  The front Orbbec Gemini 336L provides the RGB stream the remote
+    policy consumes and the depth stream its local proximity reflex reads.  The
+    command chain is the VLN client, the source mux, the Ranger chassis guard,
+    then the chassis itself.
+  can_do:
+    - "Accept one navigation instruction and drive the base toward it while it stays reachable."
+    - "Report its own state (task id, frame counter, consecutive failures) over robonix/primitive/vln/task."
+    - "Stop on command, and stop by itself on three consecutive failures or an expired plan."
+    - "Halt the task by itself when the forward depth band is closer than safety_gate_stop_m, report status=blocked (running=false) over robonix/primitive/vln/task, and stop asking the model until the band clears.  (Disabled in the current manifest; the capability exists when the gate is re-enabled.)"
+    - "Hold an instruction issued while that gate is closed and start it once the gate reopens."
+    - "Hear and speak through the robonix-client's microphone and speaker (Tencent ASR/TTS over the audio bridge), so one navigation instruction can be spoken instead of typed."
+  cannot_do:
+    - "Avoid obstacles.  The depth reflex only stops; it never steers around anything.  There is no costmap and no lidar."
+    - "Localise itself or plan a path.  The policy emits body-frame actions; the robot does not know where it is."
+    - "Drive in reverse: DualVLN has no reverse action and the guard is forward-only."
+    - "Run at the same time as the navigation stack (both own the can_ranger bus)."
+  notes:
+    - "Ships in dry-run: no velocity publisher is created and the chassis guard is not started until mode: live is set and the stack restarted."
+    - "The DualVLN server is remote.  If it is unreachable the robot stops, because every failure path resolves to a zero velocity."
+    - "The proximity gate is fail-closed: no depth frame, a stale frame or an unusable frame also halts the task and reports status=blocked."
+    - "That gate is DISABLED in the current manifest (2026-10-22), and the camera's depth stream is off with it; the base then has only the chassis guard's limits between the model and the wheels."
+    - "Voice needs a robonix-client connected to the audio bridge on port 60002.  With no client the microphone and speaker are silent, but the base behaves exactly as it does in text mode."
+    - "The Ranger chassis discards linear.x and pivots in place below its turn radius; the chassis guard prevents that happening silently."
+    - "A trajectory answer is driven as an arc -- forward and yaw together, proportional to the bearing, with no turn threshold -- so a gently curving path is followed instead of being driven straight."
+    - "guard_min_turn_radius_m comes from the vendor manual, not from measurement; calibrate it on the robot before tuning."

@@ -1,0 +1,21 @@
+manifestVersion: 1
+
+package:
+  name: robonix.primitive.agilex.ranger_mini_v3.internvln
+  version: 0.1.0
+  description: RGB to InternVLA-N1 DualVLN navigation bridge for the AgileX Ranger Mini V3.
+  license: Apache-2.0
+  tags: [primitive, agilex, ranger, internvla, dualvln, vln, navigation, ros2]
+  maintainers:
+    - Origamii520 <Origamii520@users.noreply.github.com>
+
+build: bash build.sh
+start: bash start.sh
+
+capabilities:
+  - name: robonix/primitive/vln/driver
+    path: capabilities/driver.v1.toml
+  - name: robonix/primitive/vln/task
+    path: capabilities/task.v1.toml
+
+depends: []
