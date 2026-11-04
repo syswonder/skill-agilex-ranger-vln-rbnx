@@ -1,0 +1,34 @@
+.env
+.env.*
+!.env.example
+*.key
+*.pem
+*.pdf
+logs/
+build/
+install/
+log/
+rbnx-build/
+rbnx-boot/
+.run/
+.cache/
+.pytest_cache/
+**/__pycache__/
+*.pyc
+.vscode/settings.json
+# Model weights are not in this repo: the DualVLN server runs on a separate
+# compute host.  These stay ignored for anyone who vendors a copy for reference.
+upstream/
+models/
+
+# Local overrides written by hand next to the manifest.
+*.bak.*
+
+# Robot-local runtime state
+.portal/
+
+# Local source archive, not part of the primitive
+rag-master.zip
+
+# Timestamped backups from local iterations
+*.bak-*
