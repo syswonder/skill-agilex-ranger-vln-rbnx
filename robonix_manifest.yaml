@@ -1,0 +1,544 @@
+manifestVersion: 1
+name: robonix-ranger-internvln-deploy
+
+catalog:
+  name: robonix.robot.agilex.ranger_mini_v3.internvln
+  version: 0.1.0
+  description: >-
+    Robonix x InternVLA-N1 (DualVLN) instruction-following deployment for the
+    AgileX Ranger Mini v3.  One navigation instruction goes out to the remote
+    DualVLN server, one discrete step or short trajectory comes back per frame,
+    and it is executed as a velocity on the Ranger chassis behind the Ranger
+    chassis guard.  The model server is NOT part of this deployment: it runs on
+    a compute host with its own GPU and is reached over the network.
+  license: Apache-2.0
+  tags: [robot, deploy, agilex, ranger_mini_v3, internvla, dualvln, vln, navigation, ros2]
+  maintainers:
+    - wangxiaofeng <wxf0705186@users.noreply.github.com>
+
+# ---------------------------------------------------------------------------
+# Deliberately small.  The reference follow profile carried a Mid-360 lidar,
+# an IMU, RGB-D, RTAB-Map mapping, the whole Nav2 node set, Tencent speech and
+# the audio bridge.  None of that is on the DualVLN command path: the model
+# consumes one RGB frame and returns one action, so this profile keeps the
+# camera, the chassis and the VLN primitive and drops the rest.  Fewer moving
+# parts is the point -- in particular, nothing here publishes or consumes
+# /cmd_vel except the chassis guard and the chassis.
+# ---------------------------------------------------------------------------
+env:
+  ROS_DOMAIN_ID: "0"
+  # The Ranger chassis primitive and this stack are both built for the
+  # navigation deployment's zenoh transport.  Keep the same RMW so the topics
+  # interoperate exactly as they do under navigation.
+  RMW_IMPLEMENTATION: rmw_zenoh_cpp
+  # Provider sockets bind 0.0.0.0 and auto-advertise the LAN IP, exactly like
+  # the navigation deployment: the robonix-client dials provider endpoints
+  # directly from the remote PC, so a loopback bind makes every remote dial
+  # fail with "connection refused" while all local self-checks still pass.
+  #
+  # The speech service's build script reads this from the process environment
+  # (not from its per-package config:), so it belongs here.  `tencent` uses the
+  # cloud ASR/TTS APIs and needs no local model or GPU; the credentials are
+  # supplied only through .env.
+  SPEECH_BACKEND: tencent
+
+system:
+  atlas:
+    listen: 0.0.0.0:50051
+  executor:
+    listen: 0.0.0.0:50061
+  soma:
+    listen: 127.0.0.1:50091
+    robot_yaml: ${ROBONIX_DEPLOY_DIR}/soma.yaml
+  vitals:
+    listen: 0.0.0.0:50093
+  liaison:
+    listen: 0.0.0.0:50081
+  # Pilot (the Robonix dialogue core) IS started here.  It takes a natural
+  # language utterance, asks the VLM below for an RTDL plan, and dispatches the
+  # leaves against Atlas -- the vln/task contract this stack publishes is one of
+  # the capabilities it can choose.  The VLM must be a real OpenAI-compatible
+  # endpoint (pilot is built on async-openai; an /anthropic endpoint will not
+  # work).  Values come from .env.
+  pilot:
+    listen: 127.0.0.1:50071
+    vlm:
+      upstream: ${VLM_BASE_URL}
+      api_key: ${VLM_API_KEY}
+      model: ${VLM_MODEL}
+
+primitive:
+  # Publishes the Soma-owned URDF as /robot_description and the TF tree.  Not on
+  # the control path; kept because the chassis' odom TF and any RViz session
+  # need a consistent frame tree.
+  - name: robot_description
+    url: https://github.com/syswonder/primitive-robot-description-rbnx
+    branch: main
+    manifest: package_manifest.native.yaml
+
+  # Orbbec Gemini 336L -- the only sensor this deployment needs.  RGB feeds the
+  # model (the server resizes to 384x384 itself).  Depth does NOT go to the
+  # model: it feeds the proximity gate in internvln_navigation, which publishes
+  # zero velocity when a surface is closer than safety_gate_stop_m.  Point cloud
+  # and IMU stay off.
+  #
+  # NOTE the topic prefix: the primitive namespaces every topic under
+  # `camera_name`, so this camera publishes /camera_435i/color/image_raw.
+  # The VLN primitive's rgb_topic below must match, and
+  # scripts/validate_manifest_consistency.py fails the build if it does not --
+  # a mismatch here is a dry-run that silently never receives a frame.
+  - name: front_camera
+    url: https://github.com/syswonder/primitive-orbbec-camera
+    branch: main
+    config:
+      camera_name: camera_435i
+      camera_model: gemini330_series
+      color_profile: 640x480x30
+      depth_profile: 640x480x30
+      depth_registration: false
+      enable_color: true
+      # Depth is consumed ONLY by the VLN primitive's proximity gate.  That
+      # gate is disabled in this file right now (see safety_gate_enabled
+      # below), so the stream is off as well: publishing a depth image nobody
+      # reads would just look like a working reflex in the component list.
+      # Re-enabling the gate means turning BOTH of these back on.
+      enable_depth: false
+      enable_point_cloud: false
+      enable_imu: false
+      sentinel_timeout_s: 45.0
+
+  # The chassis accepts up to 1.5 m/s and has no fail-closed motion gate of its
+  # own, so every limit that protects the robot lives one level up, in the
+  # chassis guard configured on internvln_navigation below.
+  - name: ranger_chassis
+    url: https://github.com/syswonder/primitive-agilex-ranger_mini_v3-chassis-rbnx
+    branch: main
+    config:
+      port_name: can_ranger
+      publish_odom_tf: true
+      # The chassis guard is the only writer of /cmd_vel.  Nothing else in this
+      # stack may publish there, or two sources would fight over the wheels.
+      cmd_vel_topic: /cmd_vel
+
+  # ------------------------------------------------------------ voice (audio)
+  # Client-side mic + speaker through the reverse WebSocket bridge.  The
+  # robonix-client opens ONE outbound connection to this robot on 60002 and the
+  # bridge relays its microphone and speaker as the usual audio contracts, so
+  # the robot never has to know the client's address.  Voice is usable only
+  # while that client is connected; nothing on the VLN command path depends on
+  # it, and a missing client cannot stop or steer the base.
+  #
+  # This is the same primitive the follow stack uses, with the same transport
+  # and port, so one robot does not need two different client settings.
+  - name: audio_client_bridge
+    url: https://github.com/syswonder/primitive-audio-client-bridge-rbnx
+    branch: main
+    config:
+      transport: reverse
+      listen_host: 0.0.0.0
+      listen_port: 60002
+
+  # ------------------------------------------------------------------ internvln
+  # The InternVLA-N1 DualVLN client.  The package depends on nothing but the
+  # standard library and rclpy; the model itself is a remote HTTP service.
+  #
+  # WIRING (eight hops, four of them inside this one package):
+  #   DualVLN HTTP  ->  InternVLAClient.evaluate()      [worker thread]
+  #                 ->  action_adapter: action -> Twist
+  #                 ->  PlanStore                     [50 Hz dispatch timer]
+  #                 ->  source mux  =  /cmd_vel_nav
+  #                 ->  chassis guard (Ranger turn-radius clamp)
+  #                 ->  /cmd_vel
+  #                 ->  ranger_chassis  ->  CAN
+  #
+  # Instruction ingress has two doors, both of which only *queue*:
+  #   robonix/primitive/vln/task   (set | get | stop, via Atlas/Executor)
+  #   ROS topic /ranger/vln/instruction
+  # The blocking POST /eval_dual happens on the inference thread, never on a
+  # Robonix RPC thread, because one DualVLN step is a multi-second round trip.
+  #
+  # SAFETY: mode defaults to dry-run below.  In dry-run the node subscribes,
+  # calls the model and publishes status, but creates no velocity publisher at
+  # all, and the chassis guard is not started either -- so no process in this
+  # stack can publish a non-zero velocity.  Arming is a deliberate one-word edit
+  # (`mode: live`) plus a restart; see docs/SAFETY.md.
+  #
+  # Keys absent here fall back to the packaged config/internvln_navigation.yaml.
+  # scripts/validate_manifest_consistency.py checks that every key present here
+  # is one the package actually recognises.
+  - name: internvln_navigation
+    path: ${ROBONIX_DEPLOY_DIR}/packages/internvln_navigation
+    config:
+      mode: dry-run
+
+      # Must equal /<front_camera camera_name>/color/image_raw.
+      rgb_topic: /camera_435i/color/image_raw
+      # Depth feeds the proximity gate only; the model never sees it.  Must
+      # equal /<front_camera camera_name>/depth/image_raw.
+      depth_topic: /camera_435i/depth/image_raw
+      # ------------------------------------------------------- proximity gate
+      # A reflex stop, not obstacle avoidance: any surface inside the forward
+      # band closer than stop_m publishes zero velocity, whatever the model
+      # asked for.  Fail-closed: no depth / stale depth / an unusable frame
+      # all mean "blocked".  Set require_depth: false only if you deliberately
+      # want motion without a depth stream.
+      #
+      # TURNED OFF at the operator's request (2026-10-22).  With this false the
+      # node does not subscribe to depth at all and the robot has NO local
+      # stop reflex: the only thing between the model's output and the wheels
+      # is the chassis guard (speed/accel limits, forward-only, command
+      # timeout).  The package default stays true; this file is the only place
+      # that disables it.  Put the one word back to re-arm it -- no other
+      # setting changed, so stop_m/release_m below are still the intended
+      # values.
+      safety_gate_enabled: false
+      safety_gate_require_depth: true
+      safety_gate_stop_m: 0.30
+      safety_gate_release_m: 0.50
+      safety_gate_depth_timeout_s: 0.30
+      # Where the mux reads this primitive's raw command, and the mux output.
+      command_topic: /ranger/vln/cmd_vel_raw
+      selected_output_topic: /cmd_vel_nav
+      selected_source: vln
+      # Human/operator doors.
+      instruction_topic: /ranger/vln/instruction
+      status_topic: /ranger/vln/status
+
+      # The REMOTE DualVLN server, as a BASE url -- the client appends its one
+      # route, /eval_dual, itself, so a trailing /eval_dual here would break
+      # every call.  Set INTERNVLA_SERVER_URL in .env to the compute host's
+      # address; loopback is only correct when the server is tunnelled onto
+      # this machine.
+      server_url: ${INTERNVLA_SERVER_URL}
+      # --------------------------------------------------- who asks, and when
+      # require_instruction: true -- the node boots IDLE.  Until an instruction
+      # arrives from a human door (robonix/primitive/vln/task set via the
+      # Robonix client or `rbnx chat`, or the ROS topic below) it sends the
+      # model NO request and publishes zero velocity.  Ask a stateless, greedy
+      # DualVLN the same question frame after frame and it answers the same
+      # thing forever -- that is the "infinite 0" episode -- so with nobody's
+      # task in force the honest thing is to ask nothing at all.
+      #
+      # The `instruction:` below is therefore a REFERENCE text for
+      # /ranger/vln/status, not something that arms itself.  It is also what
+      # `scripts/probe_internvla_server.py` and the docs quote, so keep it a
+      # real task; to run one, hand it over at runtime:
+      #   scripts/set_vln_instruction.sh "go to the chair and stop"
+      require_instruction: true
+      # The instruction IS the task: DualVLN decides "am I there yet" against
+      # this sentence and answers STOP once it judges the described goal
+      # reached.  So it has to name a thing and an end.  The old default,
+      # "Walk forward along the path", named neither -- the model could call it
+      # done on nearly any frame, which is exactly how a robot that had driven
+      # a few metres ended up on STOP forever.  Both the deployment document's
+      # own probe ("Go to the door and stop.") and the server's built-in
+      # default (a long office route ending at a monitor) are goal-shaped like
+      # this; a generic "keep going" clause is outside what the model was
+      # trained on.
+      #
+      # An operator stop takes the task away the same way: the plan is retired
+      # AND the stack goes back to waiting, so the next frame does not re-ask
+      # and drive off again.
+      instruction: Go to the chair and stop.
+      # Send the camera frame as it is; the server's --resize_w 384
+      # --resize_h 384 resizes whatever arrives (the deployment document calls
+      # it 输入图像缩放 -- a resize, not a crop).  Both clients we can read send
+      # the frame untouched: the document's own client, and the Go2 skill's
+      # camera/snapshot.  center_crop_height is the older local 384x384 crop.
+      model_input_mode: full_frame
+      # Only used by center_crop_height; the consistency check still pins it to
+      # the server's resize_w/h so the two modes cannot drift apart.
+      model_crop_size: 384
+      jpeg_quality: 85
+      http_timeout_s: 60.0
+
+      # Watchdog, not a step duration.  plan_hold_s is how long after its last
+      # update a plan may still command motion; the plan store zeroes it after
+      # that with no other mechanism involved.  Measured answer cadence on this
+      # deployment is p50 0.78 s / p90 0.92 s, so 1.5 s leaves room for one
+      # slow answer without letting a dead model keep driving.
+      plan_hold_s: 1.5
+      dispatch_hz: 50.0
+
+      # Stop-and-go (lockstep) execution -- the fallback path, off while the
+      # servo below is on.  With it on, one answer is driven for exactly
+      # action_step_s, the chassis is given step_settle_s to come to rest, and
+      # the inference worker is gated so no frame is even captured in between.
+      # That guarantees every image shows the pose the robot is really in, but
+      # it costs a full cycle per decision: action_step_s + step_settle_s +
+      # inference ~= 2.3 s at the measured cadence, more than half of it spent
+      # at zero.  That is the stop-and-go motion the servo replaces: the same
+      # guarantee, without standing still to think (the pose is stamped on the
+      # frame instead).
+      lockstep_enabled: false
+      action_step_s: 1.0
+      step_settle_s: 0.5
+
+      # Closed-loop steps, and the rollback switch for them.
+      #
+      # Both reference deployments end a step when the chassis has *done* it:
+      # the official Go2 client turns each action into an odometry-referenced
+      # goal pose and PIDs against it at 10 Hz, and the deployment document's
+      # client blocks on a chassis move that reports back.  This stack instead
+      # commanded "the speed that covers 0.25 m / 15 deg in action_step_s" and
+      # held it for exactly that long -- open loop.  Measured here a nominal
+      # 0.25 m step really covers about 0.20 m, and the error is not constant:
+      # it depends on floor grip, the chassis ramp and how far the previous
+      # segment coasted.  Over a task it accumulates into "stopped short of the
+      # target", "drove past it" and "turned 15 deg" frames the model then
+      # interprets from a pose it did not plan for.
+      #
+      # With odom_feedback_enabled each segment ends the moment /odom reports
+      # the angle/distance it was commanded for.  The nominal duration stays as
+      # the fallback (no odometry, or a segment with no goal such as STOP or a
+      # trajectory) and odom_segment_timeout_factor x duration is the hard
+      # stop, so a blocked chassis cannot hang one segment forever.
+      #
+      # ROLLBACK: set odom_feedback_enabled: false -- that restores today's
+      # pure-timing behaviour exactly, no code change and no other key touched.
+      odom_feedback_enabled: true
+      odom_topic: /odom
+      odom_timeout_s: 0.5
+      odom_turn_tolerance_deg: 1.5
+      odom_distance_tolerance_m: 0.02
+      odom_segment_timeout_factor: 2.0
+
+      # Continuous drive -- the reference client's architecture, and the
+      # answer to "the robot moves in lurches".
+      #
+      # The reference runs two threads: a 10 Hz control loop that servos to a
+      # goal pose and never blocks, and a planning thread that asks the model
+      # and merely moves the goal post (http_internvla_client.py:
+      # control_thread + planning_thread + PID_controller).  Ours had the
+      # request inside the execution loop, so every answer cost a full stop.
+      #
+      # Here each answer becomes one world-frame goal pose, advanced by the
+      # model's actions (incremental_change_goal), and the 50 Hz dispatch tick
+      # servos toward it with a proportional controller while the next request
+      # is already in flight.
+      #
+      # Measured from the pose the answer *lands on*, not the pose stamped on
+      # the frame -- that is what the official client does (homo_goal =
+      # self.homo_odom.copy() at answer time).  Measuring from the frame's pose
+      # was tried first and is visibly worse: the chassis has already driven
+      # that 0.25 m while the request was in flight, so the goal arrives
+      # already reached (the robot brakes and waits out the cycle) and its
+      # heading is a heading from a second ago (the robot steers back to it,
+      # which shows up on the floor as an S-shaped approach).
+      #
+      # The one thing the servo refuses: a plan that names a distance or an
+      # angle while no pose is fresh.  It holds (state=servo_wait_odom) rather
+      # than driving blind.  If /odom dies mid-run the robot stops, it does not
+      # fall back to open-loop travel.
+      #
+      # ROLLBACK: servo_enabled: false, and set lockstep_enabled: true if the
+      # old stop-and-go timing is what you want back.
+      servo_enabled: true
+      # The reference's gains (controllers.py: Kp_trans=2.0, Kp_yaw=1.5, the
+      # derivative terms at zero).  Its caps are 0.6/0.5 m/s; ours are the
+      # Ranger's 0.25/0.30, so those gains saturated almost everywhere: any
+      # offset past 12.5 cm was full throttle, any heading error past 11 deg
+      # was full steering.  That is the "it steers too hard and pushes the
+      # throttle too deep" behaviour -- correct path, driven bang-bang.
+      # 1.2/1.0 keeps the approach proportional over the distances this
+      # chassis actually uses (0.35 m advances, 0.25 m steps).
+      servo_kp_trans: 1.2
+      servo_kp_yaw: 1.0
+      # How close counts as arrived: inside this box the robot publishes zero
+      # and waits for the next answer instead of creeping onto the point.
+      servo_position_tolerance_m: 0.05
+      servo_yaw_tolerance_deg: 3.0
+
+      # 0.25 m/s is the reference chassis ceiling; DualVLN's discrete forward
+      # step (0.25 m over the 1.0 s action step) is exactly 0.25 m/s, so it
+      # fits without being clipped.  If a cap does bite, the step is held
+      # longer instead of covering less ground -- see max_chunk_actions below.
+      max_vx: 0.25
+      max_wz: 0.30
+      discrete_forward_m: 0.25
+      discrete_step_deg: 15.0
+      # The model answers in chunks: an answer of [1,1,1,1] is 1.0 m forward,
+      # not one 0.25 m step.  Both reference deployments execute every element
+      # of the chunk before taking the next picture (the Go2 skill loops over
+      # discrete_to_commands and blocks on each chassis move; the official
+      # client walks the same list adding 0.25 m / 15 deg to its goal pose).
+      # This stack truncated to 1 because a step used to be blind travel for
+      # its whole duration; with odom_feedback_enabled each element now ends
+      # when it is actually achieved, so 4 -- the trained chunk length -- can
+      # be executed as the model asked.
+      #
+      # Was 1 until 2026-10-30.  The live capture showed the model answering
+      # discrete_action[3, 3, 3, 3] (four turns, ~60 deg) while the robot
+      # turned 15 deg, re-photographed, and got the same answer again: the
+      # chunk is the model's committed decision, and cutting it to one element
+      # turns "turn to face it" into a long staircase of small corrections.
+      #
+      # 2026-11-04: 4 -> 2.  Four forward steps is a committed metre between
+      # two photographs, and the live model answers [1,1,1,1] over and over --
+      # that is what "it overshoots the target it can see" looks like.  Two
+      # steps (0.5 m / 30 deg) keeps the chunk semantics and halves the blind
+      # commitment; the next answer is a fresh picture either way.
+      max_chunk_actions: 2
+      # history_reset_frames: how many frames of one instruction the client may
+      # send before flushing the server's frame history (``reset: true``, same
+      # instruction).  0 = never flush, which is what the official client does:
+      # policy_init is true only for the very first request
+      # (http_internvla_client.py:54) and nothing resets the history after that.
+      #
+      # The server samples its 8 context images evenly over EVERY frame since
+      # the episode began (np.linspace(0, episode_idx - 1, 8)), and that is
+      # exactly how the model is trained (internvla_n1_lerobot_dataset.py:1004
+      # uses the same linspace from frame 0).  So the history IS the model's
+      # memory of where it has been and where it first saw the target.  It used
+      # to be 8 here, i.e. a wipe every ~8 answers: after that the model had no
+      # record of the target once it left the frame -- it could neither hold on
+      # to it nor tell that it had already driven past.  Do not turn this back
+      # on without a reason that is measured, not guessed.
+      history_reset_frames: 0
+      # lookahead_m: how far along the model's own path the trajectory
+      # controller aims.  The yaw is pure pursuit, 2 v sin(bearing) / L, with
+      # L the distance to the point picked here, so the commanded radius is
+      # L / (2 sin(bearing)) -- the circle that point lies on.  There is no
+      # turn threshold: any bearing gets the yaw it implies, and a wide arc is
+      # the correct answer to a small bearing.  A longer lookahead reads the
+      # same curve from further away, so treat it as a reach/smoothness knob,
+      # not as a steering gain.
+      #
+      # Was 0.30 m until 2026-10-30.  Measured from a 982 s live capture:
+      # answers land every 1 s (median) to 3 s (p90) and the robot covers
+      # 0.15-0.75 m between them.  With a 0.30 m carrot the pursued point was
+      # already behind the robot 45% of the time and within 8 cm 62% of it --
+      # the robot was chasing a point it had passed, which is the S-shaped
+      # walk that misses a target it can see.  1.00 m covers p90 of the
+      # answer cadence.
+      lookahead_m: 1.00
+      # trajectory_advance_m: how much of that path one answer is allowed to
+      # commit to.  lookahead_m decides *where the curvature is read*; this
+      # decides *how far the robot actually drives*.  Until 2026-11-04 they
+      # were the same number, so the servo's goal sat a full metre away and
+      # the robot held the speed cap until it got there -- a 0.30 m path drawn
+      # by the model was driven as a one-metre lunge, arriving (or overshooting)
+      # long after the frame that asked for it.  Keep it at roughly one
+      # answer's worth of travel, not one lookahead's.
+      trajectory_advance_m: 0.35
+      # trajectory_cruise_vx: the forward speed a trajectory answer is driven
+      # at.  max_vx is the chassis ceiling, not a target: asking for
+      # lookahead / action_step_s = 1.0 m/s every frame meant the command was
+      # clipped to the ceiling every frame.  Below it, the pair is not clipped
+      # and the arc keeps its own curvature.
+      trajectory_cruise_vx: 0.18
+      # No yaw gain on top of that.  The 2026-10-22 gain/boost experiments
+      # multiplied the bearing rather than converting it and were reverted.
+      # trajectory_stop_m: a trajectory whose pursued point is closer than this
+      # is the model saying "stay here" -- it becomes a goal-less zero command
+      # AND counts as the model's own STOP, so a model that only ever answers
+      # with trajectories can still finish a task.  Without it a 2 cm path was
+      # driven as a held 2 cm creep: the robot arrived and kept shuffling.
+      trajectory_stop_m: 0.05
+
+      # fault_after_failures: three consecutive failed evaluations is an
+      # outage, not a blip.  On the third the worker reports
+      # ModelUnavailableError and the node retires the running plan immediately
+      # instead of letting a stale command ride out its hold time.
+      fault_after_failures: 3
+      # finish_after_stops / finish_after_stops_min_s: action 0 is STOP --
+      # DualVLN saying the described goal has been reached, not a frame that
+      # simply had nothing to do (5/9 are the "no chassis action" answers).
+      # A single zero, or a short burst, is NOT completion: the model is only
+      # believed to be stuck when it has answered STOP this many times in a
+      # row AND for at least this many seconds.  Both are required.
+      #
+      # Only then does the task end the way an operator stop does: plan
+      # retired, client disarmed, no further /eval_dual requests, and `get`
+      # reports status="finished" with running=False so the executor can end
+      # the leaf instead of polling a robot that will never move again.  Any
+      # driving answer (1/2/3 or a trajectory) starts the run over.
+      finish_after_stops: 20
+      finish_after_stops_min_s: 30.0
+      # finish_reissue_grace_s: the completion latch alone did not stop the
+      # loop.  Pilot replans the moment a plan completes, so the finished task
+      # was dispatched again with the same words -- and a set restarts an
+      # episode, so the robot was walked into the same instruction forever.
+      # A set carrying the *same* instruction within this many seconds of a
+      # finish is that echo: it is answered with status="finished" and changes
+      # nothing.  A different instruction, a longer gap, or stop-then-set
+      # starts a new task.
+      finish_reissue_grace_s: 10.0
+      # set_block_timeout_s: `robonix/primitive/vln/task set` now *waits* for
+      # the episode it started.  That is what makes the plan node represent the
+      # task: the node stays Running while the robot drives, so Pilot has no
+      # completed plan to replan from, and the result it finally reads says
+      # "finished" outright.  Before this, set returned "queued" in a
+      # millisecond and every task looked finished to Pilot immediately.
+      # This bound only stops a wedged model from pinning the call forever;
+      # hitting it reports the live state, not a completion.  <= 0 disables
+      # the wait (old behaviour).
+      set_block_timeout_s: 900.0
+      # failure_retries: the live server answers a noticeable share of requests
+      # with HTTP 500.  One attempt per frame means a hiccup costs the frame AND
+      # re-arms reset:true, wiping the server's 8-frame history -- a plan with
+      # no history is how the robot ends up standing still.  Retry the same
+      # frame once before believing the failure.
+      failure_retries: 1
+      source_max_age_s: 0.25
+
+      # ------------------------------------------------ Ranger chassis guard
+      # Each key restores a protection the chassis lacks, plus one constraint
+      # the Ranger needs and a differential-drive base never did.
+      #
+      # RangerROSMessenger::TwistCmdCallback computes radius =
+      # |linear.x| / |angular.z| and, below its min_turn_radius, switches to
+      # SPINNING and calls SetMotionCommand(0.0, 0.0, angular.z) -- linear.x is
+      # DISCARDED, so a tight curve becomes a pivot in place and the robot stops
+      # making progress toward the goal.  clamp_yaw holds the pair at the turn
+      # radius instead, preserving translation.
+      guard_input_topic: /cmd_vel_nav
+      guard_output_topic: /cmd_vel
+      # DualVLN has no reverse action and the whole chain is forward-only.
+      guard_forward_only: true
+      # The guard must never be the looser limit (that would defeat it) nor
+      # tighter than the package's own cap (that would clip silently a second
+      # time at a different number).  Equal to max_vx / max_wz above.
+      guard_max_vx_mps: 0.25
+      guard_max_wz_rps: 0.30
+      # Ramp rate both ways, so it also sets the stopping distance of the
+      # stop-and-go cycle.  At 0.30 m/s^2 the ramp alone consumes most of a
+      # 1.0 s step and the robot is still rolling when step_settle_s expires;
+      # 0.60/1.20 reach the step velocity in ~0.4 s / ~0.2 s and stop inside
+      # the settle window.
+      guard_max_linear_accel_mps2: 0.60
+      guard_max_angular_accel_rps2: 1.20
+      # The AgileX firmware watchdog cuts motion 500 ms after the last CAN
+      # frame.  The guard's own timeout must fire first so that going quiet
+      # produces a COMMANDED zero rather than a firmware cut.
+      guard_command_timeout_s: 0.25
+      guard_publish_hz: 50.0
+      # The vendored ranger_ros2 inside the chassis primitive reuses
+      # RangerMiniV2Params for robot_model=ranger_mini_v3 (0.4764 m, the V2
+      # steering limit); the Mini 3.0 manual states 0.81 m.  The larger, stricter
+      # value guarantees a command never reaches the chassis's radius branch.
+      # Vendor figure, not a measurement: re-calibrate on the robot.
+      guard_min_turn_radius_m: 0.81
+      guard_turn_policy: clamp_yaw
+      guard_spin_vx_epsilon_mps: 0.02
+
+# The speech service is the only one this profile carries, and it is here for
+# voice, not for the command path: it turns microphone audio into text (Tencent
+# ASR) and text back into audio (Tencent TTS), and speaks through the
+# audio_client_bridge above.  Mapping and Nav2 stay out for the reasons the old
+# note gave -- no lidar, and the VLN primitive already paces its own output.
+service:
+  - name: speech
+    path: ${ROBONIX_SOURCE_PATH}/services/speech
+    config:
+      # Cloud backend: no local ASR/TTS model, no GPU.  The build script reads
+      # SPEECH_BACKEND from the environment (top-level env: above) and only
+      # this service reads it.
+      speech_backend: tencent
+      tencent_asr_appid: ${TENCENT_ASR_APPID}
+      tencent_asr_engine: 16k_zh
+      tencent_tts_voice_type: 1001
+      tencent_tts_region: ap-guangzhou
+      # Must name the primitive above, or speak() has no device to play on.
+      # scripts/validate_manifest_consistency.py enforces the pairing.
+      default_speaker_provider_id: audio_client_bridge

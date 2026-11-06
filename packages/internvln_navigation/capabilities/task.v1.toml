@@ -1,0 +1,14 @@
+[contract]
+id = "robonix/primitive/vln/task"
+version = "1"
+kind = "primitive"
+idl = "internvln_navigation_control/srv/VlnTask.srv"
+description = "Set, read, or stop the natural-language navigation instruction executed by InternVLA-N1 DualVLN. While the local depth proximity gate is closed the task is halted and reported as status=blocked (running=false), and get reports the state without asking the model again."
+
+[mode]
+type = "rpc"
+
+[semantics]
+# The instruction is durable state: it survives the call that set it, and every
+# subsequent frame is planned against it until it is replaced or stopped.
+stateless = false

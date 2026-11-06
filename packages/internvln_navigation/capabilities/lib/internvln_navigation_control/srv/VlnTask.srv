@@ -1,0 +1,38 @@
+# Navigation instruction control for the InternVLA-N1 DualVLN primitive.
+#
+#   operation = "set"  -> queue `instruction` for the robot to execute
+#   operation = "get"  -> read the current instruction and client state
+#   operation = "stop" -> retire the active plan and hold zero
+#
+# Handing the request to the robot is queued: the handler records it and the
+# ROS side drains it, because the blocking model step happens on the inference
+# thread.  "set" then *waits* for that episode to end and answers with its
+# terminal status ("finished", or "stopped" for an operator stop); only a
+# rejected/gated/unbound request, or one that hits `set_block_timeout_s`,
+# returns while the task is still in force.  This is deliberate: a plan node
+# must live as long as the task, or Pilot sees a completed plan in the first
+# millisecond and dispatches the same instruction again.  "get" never blocks.
+# There is no task identifier: the server is stateless apart from the frame
+# history, which the next request clears with `reset`.
+#
+# "set" also reports "already-finished" as status "finished" when the same
+# instruction is re-issued within `finish_reissue_grace_s` of a completion: the
+# echo must not restart the walk.
+#
+# status values reported by "get":
+#   "awaiting-instruction"  no task is in force; the model is not asked
+#   "idle"/"running"/...    the client's own state while a task is in force
+#   "blocked"               the local depth proximity gate is closed: execution
+#                           is halted, running=false, no model requests are made.
+#                           detail carries reason/nearest/stop distance.
+#   "held"                  (from "set") the gate is closed, so the instruction
+#                           was remembered but not started.  It starts by itself
+#                           once the gate reopens; no second "set" is needed.
+string operation
+string instruction
+---
+bool accepted
+bool running
+string instruction
+string status
+string detail

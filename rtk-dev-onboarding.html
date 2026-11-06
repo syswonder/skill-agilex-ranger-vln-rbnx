@@ -1,0 +1,251 @@
+<title>RTK 容器上手指南</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<style>
+  :root{
+    --bg:#f6f8f7; --surface:#ffffff; --fg:#17201e; --muted:#5a6b66;
+    --line:#d8dedb; --code-bg:#eef1ef; --accent:#0e6b5c; --accent-soft:#e3efec;
+    --danger:#9d2f28; --danger-bg:#fbeceb; --danger-line:#e8c3c0;
+    --warn:#8a5a12; --warn-bg:#fbf3e4; --warn-line:#e9d5ae;
+    --radius:10px;
+  }
+  @media (prefers-color-scheme: dark){
+    :root:not([data-theme="light"]){
+      --bg:#111614; --surface:#171f1c; --fg:#e2e8e5; --muted:#96a5a0;
+      --line:#2a3532; --code-bg:#1b2522; --accent:#63c1a9; --accent-soft:#1a2b27;
+      --danger:#e6918a; --danger-bg:#2a1a19; --danger-line:#4a2b29;
+      --warn:#e0b56f; --warn-bg:#2a2318; --warn-line:#4a3d24;
+      color-scheme:dark;
+    }
+  }
+  :root[data-theme="dark"]{
+    --bg:#111614; --surface:#171f1c; --fg:#e2e8e5; --muted:#96a5a0;
+    --line:#2a3532; --code-bg:#1b2522; --accent:#63c1a9; --accent-soft:#1a2b27;
+    --danger:#e6918a; --danger-bg:#2a1a19; --danger-line:#4a2b29;
+    --warn:#e0b56f; --warn-bg:#2a2318; --warn-line:#4a3d24;
+    color-scheme:dark;
+  }
+
+  *{box-sizing:border-box}
+  body{
+    margin:0; background:var(--bg); color:var(--fg);
+    font-family:"Noto Sans CJK SC","Source Han Sans SC","PingFang SC","Microsoft YaHei",system-ui,sans-serif;
+    font-size:16px; line-height:1.7;
+    padding-left:max(16px, env(safe-area-inset-left,0px));
+    padding-right:max(16px, env(safe-area-inset-right,0px));
+    padding-block:0 72px;
+  }
+  .wrap{max-width:780px; margin:0 auto}
+
+  header{padding-block:56px 28px; border-bottom:1px solid var(--line)}
+  .eyebrow{font-size:12px; letter-spacing:.12em; text-transform:uppercase; color:var(--muted); margin:0 0 10px}
+  h1{font-size:clamp(28px,5vw,38px); line-height:1.25; margin:0 0 12px; text-wrap:balance; letter-spacing:-.01em}
+  .lede{margin:0; color:var(--muted); max-width:60ch}
+  .lede strong{color:var(--fg); font-weight:600}
+
+  h2{font-size:20px; margin:44px 0 14px; line-height:1.35; text-wrap:balance}
+  h2 .n{color:var(--accent); font-variant-numeric:tabular-nums; margin-right:10px}
+  h3{font-size:15px; margin:24px 0 8px; color:var(--fg)}
+  p{margin:0 0 12px}
+  ul,ol{margin:0 0 12px; padding-left:1.35em}
+  li{margin:0 0 6px}
+  strong{font-weight:600}
+  code{
+    font-family:ui-monospace,"SFMono-Regular","JetBrains Mono",Consolas,monospace;
+    font-size:.88em; background:var(--code-bg); padding:1px 5px; border-radius:4px;
+    overflow-wrap:anywhere;
+  }
+  pre{
+    margin:0 0 14px; background:var(--code-bg); border:1px solid var(--line);
+    border-radius:var(--radius); padding:12px 14px; overflow-x:auto;
+    font-family:ui-monospace,"SFMono-Regular","JetBrains Mono",Consolas,monospace;
+    font-size:13px; line-height:1.6;
+  }
+  pre code{background:none; padding:0; font-size:inherit}
+  a{color:var(--accent)}
+
+  /* 铁律 / 警告 */
+  .rules{
+    margin:32px 0 0; padding:18px 20px; border-radius:var(--radius);
+    background:var(--surface); border:1px solid var(--line);
+  }
+  .rules h2{margin:0 0 10px; font-size:16px; letter-spacing:.02em}
+  .rules ol{margin:0; padding-left:1.3em}
+  .rules li{margin:0 0 8px}
+  .rules li:last-child{margin-bottom:0}
+
+  .danger{
+    margin:16px 0; padding:14px 18px; border-radius:var(--radius);
+    background:var(--danger-bg); border:1px solid var(--danger-line);
+  }
+  .danger p{margin:0; color:var(--fg)}
+  .danger .tag{color:var(--danger); font-weight:600; margin-right:6px}
+
+  .note{
+    margin:16px 0; padding:14px 18px; border-radius:var(--radius);
+    background:var(--warn-bg); border:1px solid var(--warn-line);
+  }
+  .note p{margin:0}
+
+  /* 配置事实 */
+  dl.facts{
+    display:grid; grid-template-columns:max-content 1fr; gap:8px 20px;
+    margin:0 0 14px; font-size:15px;
+  }
+  dl.facts dt{color:var(--muted)}
+  dl.facts dd{margin:0; min-width:0; overflow-wrap:anywhere}
+  @media (max-width:520px){
+    dl.facts{grid-template-columns:1fr; gap:2px 0}
+    dl.facts dt{margin-top:8px; font-size:13px}
+  }
+
+  /* 速查表 */
+  .scroll{overflow-x:auto; margin:0 0 14px; border:1px solid var(--line); border-radius:var(--radius)}
+  table{border-collapse:collapse; width:100%; font-size:14px; background:var(--surface)}
+  th,td{text-align:left; padding:9px 14px; border-bottom:1px solid var(--line); vertical-align:top}
+  th{font-size:12px; letter-spacing:.06em; text-transform:uppercase; color:var(--muted); font-weight:600; white-space:nowrap}
+  tr:last-child td{border-bottom:none}
+  td code{white-space:nowrap}
+  td.small{white-space:nowrap; color:var(--muted)}
+
+  .steps{list-style:none; padding:0; margin:0; display:grid; gap:14px}
+  .steps li{
+    display:grid; grid-template-columns:26px 1fr; gap:10px; align-items:start; margin:0;
+  }
+  .steps .num{
+    width:26px; height:26px; border-radius:50%; display:grid; place-items:center;
+    background:var(--accent-soft); color:var(--accent); font-size:13px; font-weight:600;
+    font-variant-numeric:tabular-nums; margin-top:2px;
+  }
+
+  footer{margin-top:56px; padding-top:18px; border-top:1px solid var(--line); color:var(--muted); font-size:13px}
+</style>
+
+<div class="wrap">
+<header>
+  <p class="eyebrow">Orin 开发机 · 容器 robonix_rtk_dev</p>
+  <h1>RTK 容器上手指南</h1>
+  <p class="lede">这台 Jetson Orin 上跑着好几套机器人项目，<strong>你只用你自己的容器 <code>robonix_rtk_dev</code></strong>。别人的容器、代码、底盘一律别碰。</p>
+</header>
+
+<section class="rules" aria-labelledby="rules-t">
+  <h2 id="rules-t">先记住这五条</h2>
+  <ol>
+    <li>只用 <code>robonix_rtk_dev</code>。另外三个容器是别人的项目，不 stop、不 rm、不进去乱跑。</li>
+    <li>镜像里的东西是大家共用的。装软件可以在容器里装，但别重建镜像、别 <code>docker rmi</code>。</li>
+    <li>代码放宿主机，别放容器里——容器随时会被删了重建，里面的文件跟着没。</li>
+    <li>跑 ROS 之前先 <code>export ROS_DOMAIN_ID=42</code>，否则会和别人的话题串在一起。</li>
+    <li>底盘是上电的真车。任何往 <code>/cmd_vel</code> 发速度的代码都会让轮子转，跑之前先问管理员。</li>
+  </ol>
+</section>
+
+<h2><span class="n">1</span>这台机器</h2>
+<dl class="facts">
+  <dt>主机名 / 账号</dt><dd><code>ubuntu</code> / <code>wangxiaofeng</code>（新同事的账号找管理员开）</dd>
+  <dt>局域网地址</dt><dd><code>10.29.135.137</code>，SSH 端口 22</dd>
+  <dt>硬件</dt><dd>Jetson AGX Orin，12 核，61 GB 内存</dd>
+  <dt>系统</dt><dd>Ubuntu 22.04.5 + JetPack R36.5.0（L4T 5.0）</dd>
+  <dt>磁盘</dt><dd>系统盘 <code>/</code> 只剩 6.8 GB；数据盘 <code>/mnt/ssd</code> 剩 43 GB（镜像和容器都存在这）</dd>
+</dl>
+<div class="note"><p><strong>磁盘很紧。</strong>大文件、数据集一律放 <code>/mnt/ssd</code> 下，别往 <code>/</code> 写，也别随手 <code>docker pull</code> 大镜像。</p></div>
+
+<h2><span class="n">2</span>登录</h2>
+<ol class="steps">
+  <li><span class="num">1</span><div>同一局域网内直接 SSH：<pre><code>ssh wangxiaofeng@10.29.135.137</code></pre>密码找管理员要。别用 root 登录。</div></li>
+  <li><span class="num">2</span><div>传文件用 <code>scp</code>：<pre><code>scp ./mydata.tar wangxiaofeng@10.29.135.137:/mnt/ssd/&lt;你的名字&gt;/rtk/</code></pre></div></li>
+  <li><span class="num">3</span><div>这里没有图形桌面可依赖，都是命令行操作。</div></li>
+</ol>
+
+<h2><span class="n">3</span>硬件脚本 setup-hw.sh</h2>
+<p>宿主机上的 <code>/home/wangxiaofeng/setup-hw.sh</code> 负责把那些“活不过重启”的硬件配置一次性恢复好：模块加载、网口地址、CAN 口名字和速率、底盘控制模式、GPU 设备。它是全车共用的，不是给你项目专用的——可以跑，但要挑时候。</p>
+
+<h3>它做哪几件事</h3>
+<ul>
+  <li><strong>雷达网口</strong>：从物理网口里找出插着 Livox Mid-360 的那个，配上 <code>192.168.1.50/24</code>，读出雷达自己的地址并写进 <code>.env</code> 的 <code>LIDAR_IP</code>。</li>
+  <li><strong>底盘 CAN</strong>：加载 <code>gs_usb</code> 驱动（JetPack 内核默认不带，本机装了修补过的模块），把适配器对应的 CAN 口改名成 <code>can_ranger</code>、设 500 kbps 并拉起；检查控制器是不是 <code>ERROR-ACTIVE</code>、发送是不是卡死（ENOBUFS），必要时复位链路。</li>
+  <li><strong>底盘控制模式</strong>：发一帧把底盘从 STANDBY 切到 CAN 控制模式，再读心跳确认。底盘不上电时这一步会跳过。</li>
+  <li><strong>相机</strong>：按 USB 厂商号 <code>2bc5</code> 找 Orbbec，只检查，不改配置。</li>
+  <li><strong>GPU</strong>：重新生成 Docker 的 CDI 配置，让容器能拿到 Jetson 的 GPU（重启后设备节点会变）。</li>
+</ul>
+<p>脚本是幂等的：已经配好的部分会直接跳过。它能自适应，不靠写死的网卡名。</p>
+
+<h3>什么时候跑</h3>
+<ul>
+  <li>机器重启之后，在起任何用到硬件的服务之前；</li>
+  <li>雷达或底盘断电、重新上电之后；</li>
+  <li>拔插过 USB-CAN、相机，或者换过网口之后；</li>
+  <li>出现这些症状时：容器里收不到雷达数据、发底盘指令车不动、CAN 报 ENOBUFS、找不到相机、容器里没有 GPU。</li>
+</ul>
+
+<h3>怎么跑</h3>
+<pre><code>cd /home/wangxiaofeng
+./setup-hw.sh          # 脚本自己会 re-exec 到 sudo，会让你输密码</code></pre>
+<p>看输出和最后一行总结：<code>[ OK ]</code> 正常，<code>[WARN]</code> 需要人看一眼，<code>[FAIL]</code> 说明那一路没配上。全部 OK 再往下用硬件。</p>
+<p>默认参数可以临时覆盖：<code>LIDAR_HOST_IP=192.168.1.50</code>、<code>LIDAR_CIDR</code>、<code>RANGER_CAN_NAME=can_ranger</code>、<code>RANGER_CAN_BITRATE=500000</code>、<code>ORBBEC_USB_VID=2bc5</code>，写成 <code>LIDAR_HOST_IP=… ./setup-hw.sh</code> 即可。</p>
+
+<div class="note"><p><strong>它写哪个 .env？</strong>脚本默认用自己所在目录下的 <code>.env</code>，现在就是 <code>/home/wangxiaofeng/.env</code>。如果你自己的项目也有 <code>.env</code> 要同步雷达 IP，用 <code>ROBONIX_ENV_FILE=&lt;你自己的 .env 路径&gt; ./setup-hw.sh</code> 指过去。</p></div>
+
+<div class="danger"><p><span class="tag">跑之前先确认</span>它动的是全车硬件：会短暂把 <code>can_ranger</code> down 再 up——正在跑的底盘节点会掉 CAN socket，必须重启；控制器不健康时还会摘挂一次 USB-CAN；也会临时占用雷达网口的地址。所以<strong>只在宿主机上跑，别在容器里跑；有人正在用车或正在跑栈的时候，先问一声</strong>。</p></div>
+
+<h2><span class="n">4</span>用你的容器</h2>
+<p>容器已经起好了，名字 <code>robonix_rtk_dev</code>，基于镜像 <code>robonix:humble-orin-deps-slim</code>（Ubuntu 22.04 + ROS 2 Humble，网络是 host 模式，没有 GPU）。按下面的方法挂上你自己的代码目录后，进容器的默认工作目录就是 <code>/root/rtk</code>。宿主机上没把你加进 docker 组，所以 docker 命令都要 <code>sudo</code>；进到容器里面是 root，不用 sudo。</p>
+
+<h3>进入与退出</h3>
+<pre><code>sudo docker exec -it robonix_rtk_dev bash   # 进入
+source /opt/ros/humble/setup.bash           # 每个新 shell 都要执行一次
+exit                                        # 退出（容器继续在跑）</code></pre>
+<p>容器靠一个 <code>tail -f /dev/null</code> 保活，里面是空的，不会自动起任何程序。想省掉每次 source，可以把那行写进容器里的 <code>~/.bashrc</code>——但重建容器后会丢。</p>
+
+<h3>开关与状态</h3>
+<pre><code>sudo docker ps -a                           # 看四个容器的状态
+sudo docker start robonix_rtk_dev           # 机器重启后要手动起（不自启）
+sudo docker stop robonix_rtk_dev
+sudo docker restart robonix_rtk_dev</code></pre>
+
+<h3>装着装着发现不对劲</h3>
+<p>容器里的环境改坏了，删掉重建就行，前提是你的代码在宿主机上。重建用下面这条，把 <code>/mnt/ssd/&lt;你的名字&gt;/rtk</code> 换成你自己建的目录：</p>
+<pre><code>mkdir -p /mnt/ssd/&lt;你的名字&gt;/rtk
+sudo docker rm -f robonix_rtk_dev
+sudo docker run -d --name robonix_rtk_dev --init --hostname ubuntu --network host \
+  --workdir /root/rtk \
+  -v /mnt/ssd/&lt;你的名字&gt;/rtk:/root/rtk \
+  -v /dev:/dev --device-cgroup-rule 'c 189:* rmw' \
+  robonix:humble-orin-deps-slim</code></pre>
+<p><code>/root/rtk</code> 就是你在容器里看到自己代码的地方：宿主机上改，容器里立刻生效；删掉容器重建，代码还在。加了 <code>--init</code> 是为了回收僵尸进程。</p>
+
+<h2><span class="n">5</span>代码放哪</h2>
+<ul>
+  <li>在 <code>/mnt/ssd</code> 下建一个你自己的目录，比如 <code>/mnt/ssd/&lt;你的名字&gt;/rtk</code>，本体项目的代码都放这里。</li>
+  <li>然后用上面的重建命令把它挂到容器的 <code>/root/rtk</code>。容器里只往这个目录写代码，宿主机和容器看到的是同一份。</li>
+  <li>容器里除了挂载目录，写进去的东西都在容器层，重建就没了。pip / apt 装的东西同理。</li>
+  <li>要长期保留的环境改动，写个 Dockerfile 或 <code>docker commit</code> 之前先问管理员——镜像和磁盘是共用的。</li>
+</ul>
+
+<h2><span class="n">6</span>不要动的东西</h2>
+<div class="danger"><p><span class="tag">别人的容器</span><code>robonix_ros_dev</code>、<code>robonix_follow_dev</code>、<code>robonix_internvln_dev</code> 分别跑着导航、跟随、internVLN 三套项目。不要 stop、rm、restart，也不要进去跑命令。</p></div>
+<div class="danger"><p><span class="tag">别人的代码</span>宿主机 <code>/mnt/ssd</code> 下不是你建的那些目录，属于别的项目和别的人，别读、别改、别删。</p></div>
+<div class="danger"><p><span class="tag">镜像</span>不要 <code>docker rmi</code>、<code>docker image prune</code>，也不要往现有镜像 tag 上 commit。这些镜像都是本地构建的，删了没有地方重新下载。</p></div>
+<div class="danger"><p><span class="tag">底盘</span>车是上电的真车，和你的项目共用。<strong>任何发布 <code>/cmd_vel</code> 的节点都会让轮子动。</strong>要跑运动相关的东西，先确认车周围没人、脚下没东西，并找管理员确认怎么用 dry-run。不要拔线、不要 <code>rmmod</code> 驱动、不要动 <code>/dev</code> 下面的设备权限。</p></div>
+<div class="danger"><p><span class="tag">主机</span>不要 reboot、关机、<code>apt upgrade</code> 系统包，也不要杀不认识的进程。网络是 host 模式，你占的端口就是宿主机的端口，起服务前先 <code>ss -ltnp</code> 看一眼有没有被占。</p></div>
+
+<h2><span class="n">7</span>速查</h2>
+<div class="scroll">
+<table>
+  <thead><tr><th>想做的事</th><th>命令</th></tr></thead>
+  <tbody>
+    <tr><td class="small">登录</td><td><code>ssh wangxiaofeng@10.29.135.137</code></td></tr>
+    <tr><td class="small">硬件自检</td><td><code>cd /home/wangxiaofeng &amp;&amp; ./setup-hw.sh</code></td></tr>
+    <tr><td class="small">看容器</td><td><code>sudo docker ps -a</code></td></tr>
+    <tr><td class="small">进容器</td><td><code>sudo docker exec -it robonix_rtk_dev bash</code></td></tr>
+    <tr><td class="small">配 ROS</td><td><code>source /opt/ros/humble/setup.bash</code></td></tr>
+    <tr><td class="small">隔离话题</td><td><code>export ROS_DOMAIN_ID=42</code></td></tr>
+    <tr><td class="small">重启后拉起</td><td><code>sudo docker start robonix_rtk_dev</code></td></tr>
+    <tr><td class="small">传文件</td><td><code>scp file wangxiaofeng@10.29.135.137:/mnt/ssd/&lt;你的名字&gt;/rtk/</code></td></tr>
+    <tr><td class="small">看端口占用</td><td><code>ss -ltnp</code></td></tr>
+    <tr><td class="small">看磁盘</td><td><code>df -h / /mnt/ssd</code></td></tr>
+  </tbody>
+</table>
+</div>
+<div class="note"><p>ROS 默认是 <code>rmw_zenoh_cpp</code>，跨进程通信要先起 router：<code>ros2 run rmw_zenoh_cpp rmw_zenohd</code>。用你自己的 <code>ROS_DOMAIN_ID</code>，别去连别人的 router。</p></div>
+
+<footer>有拿不准的操作，先问管理员，别先试。最后更新 2026-10。</footer>
+</div>
