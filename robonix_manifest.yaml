@@ -14,7 +14,7 @@ catalog:
   license: Apache-2.0
   tags: [robot, deploy, agilex, ranger_mini_v3, internvla, dualvln, vln, navigation, ros2]
   maintainers:
-    - wangxiaofeng
+    - wangxiaofeng <wxf0705186@users.noreply.github.com>
 
 # ---------------------------------------------------------------------------
 # Deliberately small.  The reference follow profile carried a Mid-360 lidar,
